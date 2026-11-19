@@ -1,0 +1,160 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>RetroShare-Next</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+:root{--bg:#12141a;--pan:#1a1e27;--ink:#e6e9ef;--dim:#8b93a7;--acc:#5ac8fa;--ok:#3ddc84;--bad:#ff6b6b;--line:#262c38}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 ui-sans-serif,system-ui,"Segoe UI",Roboto,sans-serif}
+header{display:flex;gap:10px;align-items:center;padding:10px 14px;border-bottom:1px solid var(--line);background:var(--pan);position:sticky;top:0}
+header b{font-weight:600}header .dot{width:8px;height:8px;border-radius:50%;background:var(--bad)}header.live .dot{background:var(--ok)}
+header input,header button{background:#0e1116;color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:6px 9px;font:inherit}
+header button{cursor:pointer}header button:hover{border-color:var(--acc)}
+main{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;padding:12px}@media(max-width:900px){main{grid-template-columns:1fr}}
+section{background:var(--pan);border:1px solid var(--line);border-radius:12px;display:flex;flex-direction:column;min-height:280px;max-height:52vh;overflow:hidden}
+h2{margin:0;padding:10px 12px;font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim);border-bottom:1px solid var(--line)}
+.list{overflow:auto;padding:8px 12px;flex:1}
+.row{padding:6px 0;border-bottom:1px solid #202532}.row:last-child{border:0}
+.k{color:var(--dim);font-size:12px}.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
+.bar{display:flex;gap:8px;padding:8px 12px;border-top:1px solid var(--line)}
+.bar input,.bar select{flex:1;background:#0e1116;color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:7px 9px;font:inherit;min-width:0}
+.log .who{color:var(--acc)}.empty{color:var(--dim);padding:12px}
+#feed .row.new{animation:flash .9s ease-out}@keyframes flash{from{background:#22303f}to{background:transparent}}
+</style>
+<header>
+  <b>RetroShare-Next</b><span class="dot" id="live"></span>
+  <span class="k" id="who">not connected</span>
+  <span style="flex:1"></span>
+  <input id="tok" type="password" placeholder="bearer token" size="14">
+  <button id="conn">connect</button>
+</header>
+<main>
+  <section><h2>Friends &amp; trust</h2><div class="list" id="peers"><div class="empty">—</div></div>
+    <div class="bar"><input id="signfp" placeholder="peer fingerprint to vouch for"><button id="sign">sign cert</button></div></section>
+  <section><h2>Forum <select id="chan" style="max-width:150px"></select> <span class="k" id="chanmeta"></span></h2>
+    <div class="list" id="forum"><div class="empty">—</div></div>
+    <div class="bar"><input id="postbody" placeholder="write a post"><button id="post">publish</button><button id="newchan">+ channel</button><button id="markread">mark read</button></div></section>
+  <section><h2>Chat inbox</h2><div class="list" id="inbox"><div class="empty">—</div></div>
+    <div class="bar"><input id="to" placeholder="peer fingerprint"><input id="msg" placeholder="message"><button id="send">send</button></div></section>
+  <section><h2>Files</h2><div class="list" id="files"><div class="empty">—</div></div>
+    <div class="bar"><input id="fpath" placeholder="/absolute/path/to/share"><button id="fshare">share</button><input id="fpullfp" placeholder="peer fingerprint" style="max-width:190px"><button id="fpull" title="fetch everything this friend offers that we do not already hold">fetch all</button><button id="fre fresh">refresh</button></div></section>
+  <section><h2>Search <span class="k" id="idxstate"></span></h2><div class="list" id="hits"><div class="empty">—</div></div>
+    <div class="bar"><input id="q" placeholder="words (AND-ed, ranked)"><button id="go">search</button><button id="rebuild" title="rebuild must not change what is searchable">rebuild index</button></div></section>
+  <section><h2>Wiki</h2><div class="list" id="pages"><div class="empty">—</div></div>
+    <div class="bar"><input id="wpage" placeholder="Page-Name"><input id="wbody" placeholder="page text (appended as a new revision)"><button id="wsave">save page</button></div></section>
+  <section><h2>RSS</h2><div class="list" id="feeds"><div class="empty">—</div></div>
+    <div class="bar"><input id="furl" placeholder="https://example.test/feed.xml"><input id="fname" placeholder="name (optional)" style="max-width:150px"><button id="fsub">subscribe</button><button id="fpoll" title="poll every subscription; unseen items become posts in a channel per feed">poll now</button></div></section>
+  <section style="grid-column:1/-1"><h2>Live events</h2><div class="list log" id="feed"><div class="empty">waiting…</div></div></section>
+</main>
+<script>
+const $=s=>document.querySelector(s);
+let token=(new URL(location.href)).searchParams.get('token')||'', es=null;
+const rpc=(method,params={})=>fetch('/rpc',{method:'POST',headers:{'content-type':'application/json',...(token?{authorization:'Bearer '+token}:{})},body:JSON.stringify({method,params})}).then(r=>r.json());
+function tok(){return ($('#tok').value||token).trim()}
+async function call(m,p={}){
+  const r=await fetch('/rpc',{method:'POST',headers:{'content-type':'application/json',authorization:'Bearer '+tok()},body:JSON.stringify({method:m,params:p})}).then(x=>x.json());
+  if(r.ok===false) feed({type:'error',text:(r.error||'failed')});
+  return r;
+}
+function feed(ev){
+  const box=$('#feed'); const empty=box.querySelector('.empty'); if(empty) empty.remove();
+  const d=document.createElement('div'); d.className='row new';
+  const t=ev.type||'event';
+  const text = t==='chat'?`<span class="who">${ev.peer||'?'}</span> ${esc(ev.text||'')}`
+    : t==='forum'?`forum updated · posts=${ev.posts||'?'} · root=${(ev.root||'').slice(0,12)}`
+    : t==='file'?`<span class="who">${ev.from||'peer'}</span> file ${esc(ev.name||'')} (${ev.size||'?'} B)`
+    : t==='peer-bonded'?`new friend bonded: ${esc(ev.fingerprint||'')}`
+    : t==='error'?`<span style="color:var(--bad)">${esc(ev.text||'')}</span>`
+    : `<span class="k">${esc(JSON.stringify(ev))}</span>`;
+  d.innerHTML=text; box.prepend(d);
+}
+function esc(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
+function rows(el,list,fn){ el.innerHTML = list.length?list.map(fn).join(''):'<div class="empty">nothing yet</div>' }
+async function refresh(){
+  const n=await call('node.info'); if(n.ok) $('#who').textContent=`${n.result.name} · ${n.result.fingerprint} · peers ${n.result.peers} · posts ${n.result.posts}`;
+  const p=await call('peers.list'); if(p.ok) rows($('#peers'),p.result.peers,x=>
+    `<div class="row"><div>${esc(x.fingerprint)} <span class="k">trust ${x.pair?'bonded':''}</span></div>
+     <div class="k mono">ep ${esc((x.endpoint_id||'').slice(0,16))}… · ${esc(x.last_addr||'no address yet')}</div></div>`);
+  const cs=await call('channels.list');
+  let cur=$('#chan').value||'general';
+  if(cs.ok){
+    const list=cs.result.channels;
+    if(!list.some(c=>c.name===cur)) cur='general';
+    $('#chan').innerHTML=list.map(c=>`<option value="${esc(c.name)}"${c.name===cur?' selected':''}>${esc(c.name)}${c.unread?` (${c.unread})`:''}</option>`).join('');
+    $('#chanmeta').textContent=list.filter(c=>c.unread>0).reduce((a,c)=>a+c.unread,0)+' unread';
+    cur=$('#chan').value||'general';
+  }
+  const f=await call('forum.list',{channel:cur}); if(f.ok) rows($('#forum'),f.result.posts,x=>
+    `<div class="row"><div>${esc(x.body)}</div><div class="k">${esc(x.author)} · seq ${x.seq} · ${new Date(x.ts*1000).toLocaleTimeString()}</div></div>`);
+  const i=await call('chat.inbox',{limit:50}); if(i.ok) rows($('#inbox'),i.result.messages,x=>
+    `<div class="row"><div>${esc(x.text)}</div><div class="k">${esc(x.peer)} · ${new Date(x.ts*1000).toLocaleTimeString()}</div></div>`);
+  const s=await call('files.list'); if(s.ok) rows($('#files'),s.result.shared,x=>
+    `<div class="row"><div>${esc(x.name)}</div><div class="k mono">${x.size} B · ${esc((x.sha256||'').slice(0,16))}…</div></div>`);
+  // surface index drift rather than letting a short result list look like "nothing matches"
+  const ix=await call('search.status');
+  if(ix.ok){ const s=ix.result, want=s.posts+s.files;
+    $('#idxstate').textContent = s.docs===want ? `index ${s.docs}/${want}` : `INDEX STALE ${s.docs}/${want} - rebuild`;
+    $('#idxstate').style.color = s.docs===want ? '' : '#e66'; }
+  const wg=await call('wiki.list'); if(wg.ok) rows($('#pages'),wg.result.pages,x=>
+    `<div class="row"><div>${esc(x.page)} <span class="k">· ${x.revisions} rev(s)</span></div><div class="k mono">${esc(x.current_author)} · ${new Date(x.current_ts*1000).toLocaleTimeString()}</div></div>`);
+  const fd=await call('rss.list'); if(fd.ok) rows($('#feeds'),fd.result.feeds,x=>
+    `<div class="row"><div>${esc(x.name)} <span class="k">· ${x.seen} seen</span></div><div class="k mono">${esc(x.url)}</div></div>`);
+  const t=await call('wot.trust');
+  if(t.ok){
+    const score={}; (t.result.trust||[]).forEach(x=>score[x.fingerprint]=x.score);
+    const p2=await call('peers.list');
+    if(p2.ok) rows($('#peers'),p2.result.peers,x=>{
+      const sc = score[x.fingerprint];
+      return `<div class="row"><div>${esc(x.fingerprint)} ${sc!==undefined?`<span class="k">· trust ${sc}</span>`:'<span class="k">· unsigned</span>'}</div>
+        <div class="k mono">ep ${esc((x.endpoint_id||'').slice(0,16))}… · ${esc(x.last_addr||'no address yet')}</div></div>`;
+    });
+  }
+}
+$('#conn').onclick=()=>{ token=tok(); connect(); refresh() };
+function connect(){
+  if(es) es.close();
+  es=new EventSource('/events?token='+encodeURIComponent(tok()));
+  es.onmessage=e=>{ try{ feed(JSON.parse(e.data)) }catch(_){} ; if(window.__bump) window.__bump() };
+  es.onopen=()=>{$('#live').parentNode.classList.add('live')};
+  es.onerror=()=>{$('#live').parentNode.classList.remove('live')};
+}
+let tmr=null; window.__bump=()=>{ clearTimeout(tmr); tmr=setTimeout(refresh,350) };
+$('#post').onclick=async()=>{ const v=$('#postbody').value.trim(); if(!v) return; await call('forum.post',{body:v,channel:$('#chan').value||'general'}); $('#postbody').value=''; refresh() };
+$('#chan').onchange=refresh;
+$('#newchan').onclick=async()=>{ const n=prompt('channel name'); if(!n) return; await call('channels.create',{name:n.trim(),desc:''}); refresh() };
+$('#markread').onclick=async()=>{ await call('forum.mark_read',{channel:$('#chan').value||'general'}); refresh() };
+$('#send').onclick=async()=>{ const to=$('#to').value.trim(), text=$('#msg').value; if(!to) return feed({type:'error',text:'peer fingerprint required'}); await call('chat.send',{to,text}); $('#msg').value=''; };
+$('#sign').onclick=async()=>{ const to=$('#signfp').value.trim(); if(!to) return; const r=await call('wot.sign',{to}); if(r.ok) feed({type:'forum',...r.result}); refresh(); };
+$('#go').onclick=async()=>{ const q=$('#q').value.trim(); if(!q) return;
+  const r=await call('search.query',{query:q});
+  if(!r.ok){ rows($('#hits'),[],()=> ''); alert(r.error||'search failed'); return; }
+  rows($('#hits'), r.result.hits||[], x=>
+    `<div class="row"><div>${esc(x.snippet||'(no text)')}</div><div class="k mono">${esc(x.url)} · ${x.weight}</div></div>`); };
+$('#rebuild').onclick=async()=>{ await call('search.rebuild'); refresh(); };
+$('#q').onkeydown=e=>{ if(e.key==='Enter') $('#go').click(); };
+$('#wsave').onclick=async()=>{ const page=$('#wpage').value.trim(), body=$('#wbody').value;
+  if(!page||!body.trim()) return;
+  const r=await call('wiki.save',{page,body});
+  $('#wbody').value='';
+  if(!r.ok){ alert(r.error||'save failed'); return; }
+  // show what the node considers current: a same-second tie can leave another author's text on top
+  const s=await call('wiki.show',{page});
+  feed({type:'forum', seq:r.result.seq, author:'wiki', body:`page ${page} saved; current = ${(s.result&&s.result.body||'').slice(0,60)}`});
+  refresh(); };
+$('#fsub').onclick=async()=>{ const u=$('#furl').value.trim(); if(!u) return;
+  const n=$('#fname').value.trim();
+  const r=await call('rss.add', n?{url:u,name:n}:{url:u});
+  if(!r.ok) alert(r.error||'subscribe failed');
+  $('#furl').value=''; $('#fname').value=''; refresh(); };
+$('#fpoll').onclick=async()=>{ const r=await call('rss.fetch');
+  if(!r.ok){ alert(r.error||'poll failed'); return; }
+  // show this poll's verdict per feed (a broken feed must be visible, not swallowed by the refresh)
+  rows($('#feeds'), r.result.feeds||[], x=>x.error
+    ? `<div class="row"><div>${esc(x.feed)} <span class="k">error</span></div><div class="k mono">${esc(x.error)}</div></div>`
+    : `<div class="row"><div>${esc(x.feed)} <span class="k">+${x.posted} new of ${x.items}</span></div><div class="k mono">${esc(x.url)}</div></div>`);
+  refresh(); };
+$('#fpull').onclick=async()=>{ const t=$('#fpullfp').value.trim(); if(!t) return; const r=await call('files.pull_all',{to:t}); $('#fpullfp').value=''; if(!r.ok) alert((r.error||'failed')); refresh(); };
+$('#fshare').onclick=async()=>{ const path=$('#fpath').value.trim(); if(!path) return; await call('files.share',{path}); $('#fpath').value=''; refresh(); };
+document.addEventListener('click',e=>{ if(e.target.id&&e.target.id.startsWith('fre')) refresh() });
+$('#tok').value=token; if(token){ connect(); }
+refresh();
+</script>

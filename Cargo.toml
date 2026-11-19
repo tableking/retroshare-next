@@ -1,0 +1,22 @@
+[workspace]
+resolver = "2"
+members = ["crates/rsnext-core", "crates/rsnext-node"]
+
+[workspace.dependencies]
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand = "0.8"
+sha2 = "0.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+hex = "0.4"
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+chacha20poly1305 = "0.10"
+aead = "0.5"
+generic-array = "0.14"
+rusqlite = { version = "0.43", features = ["bundled"] }
+iroh = "1.4"
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"
+# blocking HTTP for RSS/Atom polling; rustls keeps it off the system openssl
+ureq = { version = "2", default-features = false, features = ["tls", "gzip"] }

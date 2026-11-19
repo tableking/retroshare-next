@@ -1,0 +1,16 @@
+services:
+  alice:
+    build: .
+    volumes:
+      - alice-data:/data
+    environment:
+      - "RSNEXT_DIR=/data"
+  bob:
+    build: .
+    volumes:
+      - bob-data:/data
+    depends_on:
+      - alice
+volumes:
+  alice-data: {}
+  bob-data: {}
